@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -295,7 +296,7 @@ func checkIfBootstrapPathDiffers(ctx context.Context, kubeClient client.Client, 
 	if err != nil {
 		return "", false
 	}
-	if fluxSystemKustomization.Spec.Path == path {
+	if fluxSystemKustomization.Spec.Path == fmt.Sprintf("./%s", strings.TrimPrefix(path, "./")) {
 		return "", false
 	}
 
