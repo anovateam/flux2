@@ -32,6 +32,7 @@ import (
 	apierr "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/kustomize/api/filesys"
@@ -50,7 +51,7 @@ type Bootstrap struct {
 	git          git.Git
 	provider     gitprovider.Client
 	kube         client.Client
-	log          log.Logger
+	logger       log.Logger
 	pollInterval time.Duration
 	timeout      time.Duration
 	kubeConfig   string
@@ -92,7 +93,7 @@ func NewBootstrap(git git.Git, provider gitprovider.Client, log log.Logger, poll
 	return &Bootstrap{
 		git:          git,
 		provider:     provider,
-		log:          log,
+		logger:       log,
 		kube:         kube,
 		pollInterval: pollInterval,
 		timeout:      timeout,
@@ -139,7 +140,7 @@ func (b *Bootstrap) OrgRepository(ctx context.Context, ref gitprovider.OrgReposi
 	accessInfo ...gitprovider.TeamAccessInfo) (gitprovider.UserRepository, error) {
 
 	// Reconcile repository config
-	b.log.Actionf("connecting to %s", ref.Domain)
+	b.logger.Actionf("connecting to %s", ref.Domain)
 
 	repo, err := b.provider.OrgRepositories().Get(ctx, ref)
 	if err != nil {
@@ -156,7 +157,7 @@ func (b *Bootstrap) OrgRepository(ctx context.Context, ref gitprovider.OrgReposi
 		if err != nil {
 			return nil, fmt.Errorf("failed to create new Git repository %s: %w", ref.String(), err)
 		}
-		b.log.Successf("repository %s created", ref.String())
+		b.logger.Successf("repository %s created", ref.String())
 	}
 
 	// Set default branch before calling Reconcile due to bug described
@@ -167,22 +168,22 @@ func (b *Bootstrap) OrgRepository(ctx context.Context, ref gitprovider.OrgReposi
 		return nil, fmt.Errorf("failed to reconcile Git repository %s: %w", ref.String(), err)
 	}
 	if changed {
-		b.log.Successf("repository %s reconciled", ref.String())
+		b.logger.Successf("repository %s reconciled", ref.String())
 	}
 
 	// Reconcile repository permission config on best effort
 	var warning error
 	if count := len(accessInfo); count > 0 {
-		b.log.Actionf("reconciling %d permission rules", count)
+		b.logger.Actionf("reconciling %d permission rules", count)
 		for _, i := range accessInfo {
 			var err error
 			_, changed, err = r.TeamAccess().Reconcile(ctx, i)
 			if err != nil {
 				warning = ErrFailedWithWarning
-				b.log.Failuref("failed to grant %s permissions to %s: %w", i.Permission, i.Name, err)
+				b.logger.Failuref("failed to grant %s permissions to %s: %w", i.Permission, i.Name, err)
 			}
 			if changed {
-				b.log.Successf("granted %s permissions to %s", i.Permission, i.Name)
+				b.logger.Successf("granted %s permissions to %s", i.Permission, i.Name)
 			}
 		}
 	}
@@ -193,7 +194,7 @@ func (b *Bootstrap) UserRepository(ctx context.Context, ref gitprovider.UserRepo
 	info gitprovider.RepositoryInfo) (gitprovider.UserRepository, error) {
 
 	// Reconcile repository config
-	b.log.Actionf("connecting to %s", ref.Domain)
+	b.logger.Actionf("connecting to %s", ref.Domain)
 
 	repo, err := b.provider.UserRepositories().Get(ctx, ref)
 	if err != nil {
@@ -210,7 +211,7 @@ func (b *Bootstrap) UserRepository(ctx context.Context, ref gitprovider.UserRepo
 		if err != nil {
 			return nil, fmt.Errorf("failed to create new Git repository %s: %w", ref.String(), err)
 		}
-		b.log.Successf("repository %s created", ref.String())
+		b.logger.Successf("repository %s created", ref.String())
 	}
 
 	// Set default branch before calling Reconcile due to bug described
@@ -221,7 +222,7 @@ func (b *Bootstrap) UserRepository(ctx context.Context, ref gitprovider.UserRepo
 		return nil, err
 	}
 	if changed {
-		b.log.Successf("repository %s reconciled", ref.String())
+		b.logger.Successf("repository %s reconciled", ref.String())
 	}
 	return r, nil
 }
@@ -231,19 +232,19 @@ func (b *Bootstrap) SourceSecret(ctx context.Context, repo gitprovider.UserRepos
 
 	// Determine if there is an existing secret
 	secretKey := client.ObjectKey{Name: options.Name, Namespace: options.Namespace}
-	b.log.Actionf("determining if source secret %s exists", secretKey)
+	b.logger.Actionf("determining if source secret %s exists", secretKey)
 	ok, err := b.secretExists(ctx, secretKey)
 	if err != nil {
 		return fmt.Errorf("failed to determine if deploy key secret exists: %w", err)
 	}
 	// Return early if exists and no custom config is passed
 	if ok && len(options.CAFilePath+options.PrivateKeyPath+options.Username+options.Password) == 0 {
-		b.log.Successf("source secret up to date")
+		b.logger.Successf("source secret up to date")
 		return nil
 	}
 
 	// Generate source secret
-	b.log.Actionf("generating source secret")
+	b.logger.Actionf("generating source secret")
 	manifest, err := sourcesecret.Generate(options)
 	if err != nil {
 		return err
@@ -258,7 +259,7 @@ func (b *Bootstrap) SourceSecret(ctx context.Context, repo gitprovider.UserRepos
 	ppk, ok := secret.StringData[sourcesecret.PublicKeySecretKey]
 	if ok {
 		if repo != nil {
-			b.log.Actionf("reconciling deploy key configuration for %s", repo.Repository().GetRepository())
+			b.logger.Actionf("reconciling deploy key configuration for %s", repo.Repository().GetRepository())
 			keyInfo := gitprovider.DeployKeyInfo{
 				Name: options.Name,
 				Key:  []byte(ppk),
@@ -268,21 +269,21 @@ func (b *Bootstrap) SourceSecret(ctx context.Context, repo gitprovider.UserRepos
 				return err
 			}
 			if changed {
-				b.log.Successf("updated deploy key configuration")
+				b.logger.Successf("updated deploy key configuration")
 			} else {
-				b.log.Successf("deploy key configuration is up to date")
+				b.logger.Successf("deploy key configuration is up to date")
 			}
 		}
-		b.log.Successf("public key: %s", strings.TrimSpace(ppk))
+		b.logger.Successf("public key: %s", strings.TrimSpace(ppk))
 	}
 
 	// Apply source secret
-	b.log.Actionf("applying source secret %s", secret.Name)
+	b.logger.Actionf("applying source secret %s", secret.Name)
 	if err = b.reconcileSecret(ctx, secret); err != nil {
 		return err
 	}
 
-	b.log.Successf("reconciled source secret")
+	b.logger.Successf("reconciled source secret")
 	return nil
 }
 
@@ -294,23 +295,23 @@ func (b *Bootstrap) ComponentConfig(ctx context.Context, manifestsBase, url, bra
 			return err
 		}
 
-		b.log.Actionf("cloning Git repository from %s", url)
+		b.logger.Actionf("cloning Git repository from %s", url)
 		cloned, err := b.git.Clone(ctx, url, branch)
 		if err != nil {
 			return fmt.Errorf("failed to clone repository: %w", err)
 		}
 		if cloned {
-			b.log.Successf("cloned repository")
+			b.logger.Successf("cloned repository")
 		}
 	}
 
 	// Generate component manifests
-	b.log.Actionf("generating component manifests")
+	b.logger.Actionf("generating component manifests")
 	manifests, err := install.Generate(options, manifestsBase)
 	if err != nil {
 		return fmt.Errorf("component manifest generation failed: %w", err)
 	}
-	b.log.Successf("generated component manifests")
+	b.logger.Successf("generated component manifests")
 
 	// Write manifest to Git repository
 	if err = b.git.Write(manifests.Path, strings.NewReader(manifests.Content)); err != nil {
@@ -326,29 +327,26 @@ func (b *Bootstrap) ComponentConfig(ctx context.Context, manifestsBase, url, bra
 		return fmt.Errorf("failed to commit sync manifests: %w", err)
 	}
 	if err == nil {
-		b.log.Successf("committed component manifests in %s (%s)", branch, head)
-		b.log.Actionf("pushing component manifests to %s", url)
+		b.logger.Successf("committed component manifests in %s (%s)", branch, head)
+		b.logger.Actionf("pushing component manifests to %s", url)
 		if err = b.git.Push(ctx); err != nil {
 			return fmt.Errorf("failed to push manifests: %w", err)
 		}
 	} else {
-		b.log.Successf("component manifests are up to date")
+		b.logger.Successf("component manifests are up to date")
 	}
 
-	// Confirm running, apply to cluster if not
-	healthy, err := b.Healthy(ctx)
-	if err != nil {
-		return err
-	}
-	if !healthy {
-		b.log.Actionf("installing components in %s namespace", options.Namespace)
+	// Conditionally install manifests
+	if b.shouldInstallManifests(ctx, options.Namespace) {
+		b.logger.Actionf("installing components in %s namespace", options.Namespace)
 		kubectlArgs := []string{"apply", "-f", filepath.Join(b.git.Path(), manifests.Path)}
 		if _, err = utils.ExecKubectlCommand(ctx, utils.ModeStderrOS, b.kubeConfig, b.kubeContext, kubectlArgs...); err != nil {
 			return err
 		}
+		b.logger.Successf("installed components")
 	}
 
-	b.log.Successf("reconciled components")
+	b.logger.Successf("reconciled components")
 	return nil
 }
 
@@ -357,20 +355,20 @@ func (b *Bootstrap) SyncConfig(ctx context.Context, url, branch string, options 
 	// Clone if not already
 	if _, err := b.git.Status(); err != nil {
 		if err == git.ErrNoGitRepository {
-			b.log.Actionf("cloning Git repository from %s", url)
+			b.logger.Actionf("cloning Git repository from %s", url)
 			cloned, err := b.git.Clone(ctx, url, branch)
 			if err != nil {
 				return fmt.Errorf("failed to clone repository: %w", err)
 			}
 			if cloned {
-				b.log.Successf("cloned repository", url)
+				b.logger.Successf("cloned repository", url)
 			}
 		}
 		return err
 	}
 
 	// Generate sync manifests and write to Git repository
-	b.log.Actionf("generating sync manifests")
+	b.logger.Actionf("generating sync manifests")
 	manifests, err := sync.Generate(options)
 	if err != nil {
 		return fmt.Errorf("sync manifests generation failed: %w", err)
@@ -389,7 +387,7 @@ func (b *Bootstrap) SyncConfig(ctx context.Context, url, branch string, options 
 	if err = b.git.Write(kusManifests.Path, strings.NewReader(kusManifests.Content)); err != nil {
 		return fmt.Errorf("failed to write manifest %s: %w", kusManifests.Path, err)
 	}
-	b.log.Successf("generated sync manifests")
+	b.logger.Successf("generated sync manifests")
 
 	// Git commit generated
 	commit, err := b.git.Commit(git.Commit{
@@ -403,22 +401,22 @@ func (b *Bootstrap) SyncConfig(ctx context.Context, url, branch string, options 
 		return fmt.Errorf("failed to commit sync manifests: %w", err)
 	}
 	if err == nil {
-		b.log.Successf("committed sync manifests in %s (%s)", options.Branch, commit)
-		b.log.Actionf("pushing sync manifests to %s", url)
+		b.logger.Successf("committed sync manifests in %s (%s)", options.Branch, commit)
+		b.logger.Actionf("pushing sync manifests to %s", url)
 		if err = b.git.Push(ctx); err != nil {
 			return fmt.Errorf("failed to push sync manifests: %w", err)
 		}
 	} else {
-		b.log.Successf("sync manifests are up to date")
+		b.logger.Successf("sync manifests are up to date")
 	}
 
 	// Apply to cluster
-	b.log.Actionf("applying sync manifests")
+	b.logger.Actionf("applying sync manifests")
 	kubectlArgs := []string{"apply", "-k", filepath.Join(b.git.Path(), filepath.Dir(kusManifests.Path))}
 	if _, err = utils.ExecKubectlCommand(ctx, utils.ModeStderrOS, b.kubeConfig, b.kubeContext, kubectlArgs...); err != nil {
 		return err
 	}
-	b.log.Successf("applied sync manifests")
+	b.logger.Successf("applied sync manifests")
 
 	// Wait till Kustomization is reconciled
 	var k kustomizev1.Kustomization
@@ -427,14 +425,8 @@ func (b *Bootstrap) SyncConfig(ctx context.Context, url, branch string, options 
 		return fmt.Errorf("failed waiting for Kustomization: %w", err)
 	}
 
-	b.log.Successf("reconciled sync configuration")
+	b.logger.Successf("reconciled sync configuration")
 	return nil
-}
-
-func (b *Bootstrap) Healthy(ctx context.Context) (bool, error) {
-	// TODO(hidde): implement check using kstatus, best option is probably
-	//  to move `cmd/status.go` to a package and make it a bit more generic.
-	return false, nil
 }
 
 func (b *Bootstrap) secretExists(ctx context.Context, objKey client.ObjectKey) (bool, error) {
@@ -493,4 +485,17 @@ func (b *Bootstrap) kustomizationReconciled(ctx context.Context,
 		}
 		return false, nil
 	}
+}
+
+func (b *Bootstrap) shouldInstallManifests(ctx context.Context, namespace string) bool {
+	namespacedName := types.NamespacedName{
+		Namespace: namespace,
+		Name:      namespace,
+	}
+	var k kustomizev1.Kustomization
+	if err := b.kube.Get(ctx, namespacedName, &k); err != nil {
+		return true
+	}
+
+	return k.Status.LastAppliedRevision == ""
 }
