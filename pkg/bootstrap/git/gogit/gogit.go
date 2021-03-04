@@ -18,7 +18,9 @@ package gogit
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	gogit "github.com/go-git/go-git/v5"
@@ -79,11 +81,12 @@ func (g *goGit) Init(url, branch string) (bool, error) {
 }
 
 func (g *goGit) Clone(ctx context.Context, url, branch string) (bool, error) {
+	branchRef := plumbing.NewBranchReferenceName(branch)
 	r, err := gogit.PlainCloneContext(ctx, g.path, false, &gogit.CloneOptions{
 		URL:           url,
 		Auth:          g.auth,
 		RemoteName:    gogit.DefaultRemoteName,
-		ReferenceName: plumbing.NewBranchReferenceName(branch),
+		ReferenceName: branchRef,
 		SingleBranch:  true,
 
 		NoCheckout: false,
@@ -91,7 +94,7 @@ func (g *goGit) Clone(ctx context.Context, url, branch string) (bool, error) {
 		Tags:       gogit.NoTags,
 	})
 	if err != nil {
-		if err == transport.ErrEmptyRemoteRepository {
+		if err == transport.ErrEmptyRemoteRepository || isRemoteBranchNotFoundErr(err, branchRef.String()) {
 			return g.Init(url, branch)
 		}
 		return false, err
@@ -188,4 +191,8 @@ func (g *goGit) Status() (bool, error) {
 
 func (g *goGit) Path() string {
 	return g.path
+}
+
+func isRemoteBranchNotFoundErr(err error, ref string) bool {
+	return strings.Contains(err.Error(), fmt.Sprintf("couldn't find remote ref %q", ref))
 }
