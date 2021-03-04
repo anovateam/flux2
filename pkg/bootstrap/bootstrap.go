@@ -140,9 +140,31 @@ func (b *Bootstrap) OrgRepository(ctx context.Context, ref gitprovider.OrgReposi
 
 	// Reconcile repository config
 	b.log.Actionf("connecting to %s", ref.Domain)
+
+	repo, err := b.provider.OrgRepositories().Get(ctx, ref)
+	if err != nil {
+		if !errors.Is(err, gitprovider.ErrNotFound) {
+			return nil, fmt.Errorf("failed to get Git repository %s: %w", ref.String(), err)
+		}
+		// go-git-providers has at present some issues with the idempotency
+		// of the available Reconcile methods, and setting e.g. the default
+		// branch correctly. Resort to Create with AutoInit until this has
+		// been resolved.
+		repo, err = b.provider.OrgRepositories().Create(ctx, ref, info, &gitprovider.RepositoryCreateOptions{
+			AutoInit: gitprovider.BoolVar(true),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create new Git repository %s: %w", ref.String(), err)
+		}
+		b.log.Successf("repository %s created", ref.String())
+	}
+
+	// Set default branch before calling Reconcile due to bug described
+	// above.
+	info.DefaultBranch = repo.Get().DefaultBranch
 	r, changed, err := b.provider.OrgRepositories().Reconcile(ctx, ref, info)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to reconcile Git repository %s: %w", ref.String(), err)
 	}
 	if changed {
 		b.log.Successf("repository %s reconciled", ref.String())
@@ -172,6 +194,28 @@ func (b *Bootstrap) UserRepository(ctx context.Context, ref gitprovider.UserRepo
 
 	// Reconcile repository config
 	b.log.Actionf("connecting to %s", ref.Domain)
+
+	repo, err := b.provider.UserRepositories().Get(ctx, ref)
+	if err != nil {
+		if !errors.Is(err, gitprovider.ErrNotFound) {
+			return nil, fmt.Errorf("failed to get Git repository %s: %w", ref.String(), err)
+		}
+		// go-git-providers has at present some issues with the idempotency
+		// of the available Reconcile methods, and setting e.g. the default
+		// branch correctly. Resort to Create with AutoInit until this has
+		// been resolved.
+		repo, err = b.provider.UserRepositories().Create(ctx, ref, info, &gitprovider.RepositoryCreateOptions{
+			AutoInit: gitprovider.BoolVar(true),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create new Git repository %s: %w", ref.String(), err)
+		}
+		b.log.Successf("repository %s created", ref.String())
+	}
+
+	// Set default branch before calling Reconcile due to bug described
+	// above.
+	info.DefaultBranch = repo.Get().DefaultBranch
 	r, changed, err := b.provider.UserRepositories().Reconcile(ctx, ref, info)
 	if err != nil {
 		return nil, err
