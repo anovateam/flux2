@@ -32,8 +32,10 @@ import (
 	apierr "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/yaml"
@@ -45,6 +47,7 @@ import (
 	"github.com/fluxcd/flux2/pkg/manifestgen/kustomization"
 	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
 	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
+	"github.com/fluxcd/flux2/pkg/status"
 )
 
 type Bootstrap struct {
@@ -130,6 +133,12 @@ func (b *Bootstrap) Reconcile(ctx context.Context, manifestsBase string, install
 	}
 
 	if err := b.SyncConfig(ctx, repo.GetCloneURL(gitprovider.TransportTypeHTTPS), syncOpts.Branch, syncOpts); err != nil {
+		return err
+	}
+
+	components := installOpts.Components
+	components = append(components, installOpts.ComponentsExtra...)
+	if err := b.ComponentsHealthy(installOpts.Namespace, components...); err != nil {
 		return err
 	}
 
@@ -426,6 +435,31 @@ func (b *Bootstrap) SyncConfig(ctx context.Context, url, branch string, options 
 	}
 
 	b.logger.Successf("reconciled sync configuration")
+	return nil
+}
+
+func (b *Bootstrap) ComponentsHealthy(namespace string, components ...string) error {
+	cfg, err := utils.KubeConfig(b.kubeConfig, b.kubeContext)
+	if err != nil {
+		return err
+	}
+	checker, err := status.NewStatusChecker(cfg, b.pollInterval, b.timeout, b.logger)
+	if err != nil {
+		return err
+	}
+	var identifiers []object.ObjMetadata
+	for _, component := range components {
+		identifiers = append(identifiers, object.ObjMetadata{
+			Namespace: namespace,
+			Name:      component,
+			GroupKind: schema.GroupKind{Group: "apps", Kind: "Deployment"},
+		})
+	}
+	b.logger.Actionf("confirming %d components are healthy", len(identifiers))
+	if err := checker.Assess(identifiers...); err != nil {
+		return err
+	}
+	b.logger.Successf("all components are healthy")
 	return nil
 }
 
