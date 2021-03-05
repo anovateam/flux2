@@ -205,9 +205,11 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 			RepositoryName: githubArgs.repository,
 		}
 	}
-	// TODO(hidde): configure "public" flag
 	repoInfo := &gitprovider.RepositoryInfo{
 		DefaultBranch: gitprovider.StringVar(bootstrapArgs.branch),
+	}
+	if !githubArgs.private {
+		repoInfo.Visibility = gitprovider.RepositoryVisibilityVar(gitprovider.RepositoryVisibilityPublic)
 	}
 
 	// Install manifest config
@@ -254,8 +256,7 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 
 	// Sync manifest config
 	syncOpts := sync.Options{
-		Interval: githubArgs.interval,
-		// TODO(hidde): support token auth
+		Interval:          githubArgs.interval,
 		URL:               repoOpts.GetCloneURL(gitprovider.TransportTypeSSH),
 		Name:              rootArgs.namespace,
 		Namespace:         rootArgs.namespace,
@@ -264,6 +265,9 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		TargetPath:        githubArgs.path.String(),
 		ManifestFile:      sync.MakeDefaultOptions().ManifestFile,
 		GitImplementation: sourceGitArgs.gitImplementation.String(),
+	}
+	if bootstrapArgs.tokenAuth {
+		syncOpts.URL = repoOpts.GetCloneURL(gitprovider.TransportTypeHTTPS)
 	}
 
 	// Run
