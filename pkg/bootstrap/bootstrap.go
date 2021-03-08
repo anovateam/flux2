@@ -24,10 +24,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fluxcd/go-git-providers/gitprovider"
-	"github.com/fluxcd/go-git-providers/validation"
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
-	"github.com/fluxcd/pkg/apis/meta"
 	corev1 "k8s.io/api/core/v1"
 	apierr "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -40,6 +36,11 @@ import (
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/yaml"
 
+	"github.com/fluxcd/go-git-providers/gitprovider"
+	"github.com/fluxcd/go-git-providers/validation"
+	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
+	"github.com/fluxcd/pkg/apis/meta"
+
 	"github.com/fluxcd/flux2/internal/utils"
 	"github.com/fluxcd/flux2/pkg/bootstrap/git"
 	"github.com/fluxcd/flux2/pkg/log"
@@ -49,6 +50,8 @@ import (
 	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
 	"github.com/fluxcd/flux2/pkg/status"
 )
+
+var ErrFailedWithWarning = errors.New("failed with warning")
 
 type Bootstrap struct {
 	git          git.Git
@@ -104,8 +107,6 @@ func NewBootstrap(git git.Git, provider gitprovider.Client, log log.Logger, poll
 		kubeContext:  kubeContext,
 	}, nil
 }
-
-var ErrFailedWithWarning = errors.New("failed with warning")
 
 func (b *Bootstrap) Reconcile(ctx context.Context, manifestsBase string, installOpts install.Options, secretOpts sourcesecret.Options,
 	syncOpts sync.Options, repo gitprovider.RepositoryRef, repoInfo *gitprovider.RepositoryInfo, accessInfo ...gitprovider.TeamAccessInfo) error {

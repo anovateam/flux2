@@ -24,16 +24,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/fluxcd/go-git-providers/github"
-	"github.com/fluxcd/go-git-providers/gitprovider"
-	"github.com/fluxcd/pkg/git"
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/spf13/cobra"
+
+	"github.com/fluxcd/go-git-providers/gitprovider"
 
 	"github.com/fluxcd/flux2/internal/flags"
 	"github.com/fluxcd/flux2/internal/utils"
 	"github.com/fluxcd/flux2/pkg/bootstrap"
 	"github.com/fluxcd/flux2/pkg/bootstrap/git/gogit"
+	"github.com/fluxcd/flux2/pkg/bootstrap/provider"
 	"github.com/fluxcd/flux2/pkg/manifestgen/install"
 	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
 	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
@@ -88,6 +88,8 @@ type githubFlags struct {
 
 const (
 	ghDefaultPermission = "maintain"
+	ghDefaultDomain     = "github.com"
+	ghTokenEnvVar       = "GITHUB_TOKEN"
 )
 
 var githubArgs githubFlags
@@ -99,7 +101,7 @@ func init() {
 	bootstrapGitHubCmd.Flags().BoolVar(&githubArgs.personal, "personal", false, "if true, the owner is assumed to be a GitHub user; otherwise an org")
 	bootstrapGitHubCmd.Flags().BoolVar(&githubArgs.private, "private", true, "if true, the repository is assumed to be private")
 	bootstrapGitHubCmd.Flags().DurationVar(&githubArgs.interval, "interval", time.Minute, "sync interval")
-	bootstrapGitHubCmd.Flags().StringVar(&githubArgs.hostname, "hostname", git.GitHubDefaultHostname, "GitHub hostname")
+	bootstrapGitHubCmd.Flags().StringVar(&githubArgs.hostname, "hostname", ghDefaultDomain, "GitHub hostname")
 	bootstrapGitHubCmd.Flags().StringVar(&githubArgs.sshHostname, "ssh-hostname", "", "GitHub SSH hostname, to be used when the SSH host differs from the HTTPS one")
 	bootstrapGitHubCmd.Flags().Var(&githubArgs.path, "path", "path relative to the repository root, when specified the cluster sync will be scoped to this path")
 
@@ -107,9 +109,9 @@ func init() {
 }
 
 func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
-	ghToken := os.Getenv(git.GitHubTokenName)
+	ghToken := os.Getenv(ghTokenEnvVar)
 	if ghToken == "" {
-		return fmt.Errorf("%s environment variable not found", git.GitHubTokenName)
+		return fmt.Errorf("%s environment variable not found", ghTokenEnvVar)
 	}
 
 	if err := bootstrapValidate(); err != nil {
@@ -156,13 +158,14 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		manifestsBase = tmpBaseDir
 	}
 
-	// GitHub provider
-	var providerOpts []github.ClientOption
-	providerOpts = append(providerOpts, github.WithOAuth2Token(ghToken))
-	if githubArgs.hostname != "" {
-		providerOpts = append(providerOpts, github.WithDomain(githubArgs.hostname))
+	// Build GitHub provider
+	providerCfg := provider.Config{
+		Provider:    provider.GitProviderGitHub,
+		Hostname:    githubArgs.hostname,
+		SSHHostname: githubArgs.sshHostname,
+		Token:       ghToken,
 	}
-	provider, err := github.NewClient(providerOpts...)
+	prov, err := provider.BuildGitProvider(providerCfg)
 	if err != nil {
 		return err
 	}
@@ -179,7 +182,7 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 	})
 
 	// Init bootstrap
-	b, err := bootstrap.NewBootstrap(repo, provider, logger, rootArgs.pollInterval, rootArgs.timeout, rootArgs.kubeconfig, rootArgs.kubecontext)
+	b, err := bootstrap.NewBootstrap(repo, prov, logger, rootArgs.pollInterval, rootArgs.timeout, rootArgs.kubeconfig, rootArgs.kubecontext)
 	if err != nil {
 		return err
 	}
