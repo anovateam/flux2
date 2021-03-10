@@ -27,11 +27,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/spf13/cobra"
 
-	"github.com/fluxcd/go-git-providers/gitprovider"
-
 	"github.com/fluxcd/flux2/internal/flags"
 	"github.com/fluxcd/flux2/internal/utils"
 	"github.com/fluxcd/flux2/pkg/bootstrap"
+	"github.com/fluxcd/flux2/pkg/bootstrap/git"
 	"github.com/fluxcd/flux2/pkg/bootstrap/git/gogit"
 	"github.com/fluxcd/flux2/pkg/bootstrap/provider"
 	"github.com/fluxcd/flux2/pkg/manifestgen/install"
@@ -165,7 +164,7 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		SSHHostname: githubArgs.sshHostname,
 		Token:       ghToken,
 	}
-	prov, err := provider.BuildGitProvider(providerCfg)
+	providerClient, err := provider.BuildGitProvider(providerCfg)
 	if err != nil {
 		return err
 	}
@@ -176,44 +175,10 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create temporary working dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
-	repo := gogit.New(tmpDir, &http.BasicAuth{
+	gitClient := gogit.New(tmpDir, &http.BasicAuth{
 		Username: githubArgs.owner,
 		Password: ghToken,
 	})
-
-	// Init bootstrap
-	b, err := bootstrap.NewBootstrap(repo, prov, logger, rootArgs.pollInterval, rootArgs.timeout, rootArgs.kubeconfig, rootArgs.kubecontext)
-	if err != nil {
-		return err
-	}
-
-	// Repository config
-	var repoOpts gitprovider.RepositoryRef
-	switch githubArgs.personal {
-	case false:
-		repoOpts = gitprovider.OrgRepositoryRef{
-			OrganizationRef: gitprovider.OrganizationRef{
-				Domain:       githubArgs.hostname,
-				Organization: githubArgs.owner,
-			},
-			RepositoryName: githubArgs.repository,
-		}
-	default:
-		// TODO(hidde): add support upstream for custom SSH hostname (and/or port)
-		repoOpts = gitprovider.UserRepositoryRef{
-			UserRef: gitprovider.UserRef{
-				Domain:    githubArgs.hostname,
-				UserLogin: githubArgs.owner,
-			},
-			RepositoryName: githubArgs.repository,
-		}
-	}
-	repoInfo := &gitprovider.RepositoryInfo{
-		DefaultBranch: gitprovider.StringVar(bootstrapArgs.branch),
-	}
-	if !githubArgs.private {
-		repoInfo.Visibility = gitprovider.RepositoryVisibilityVar(gitprovider.RepositoryVisibilityPublic)
-	}
 
 	// Install manifest config
 	installOptions := install.Options{
@@ -251,7 +216,6 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		secretOpts.PrivateKeyAlgorithm = sourcesecret.RSAPrivateKeyAlgorithm
 		secretOpts.RSAKeyBits = 2048
 		secretOpts.SSHHostname = githubArgs.hostname
-
 		if githubArgs.sshHostname != "" {
 			secretOpts.SSHHostname = githubArgs.sshHostname
 		}
@@ -260,7 +224,6 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 	// Sync manifest config
 	syncOpts := sync.Options{
 		Interval:          githubArgs.interval,
-		URL:               repoOpts.GetCloneURL(gitprovider.TransportTypeSSH),
 		Name:              rootArgs.namespace,
 		Namespace:         rootArgs.namespace,
 		Branch:            bootstrapArgs.branch,
@@ -269,10 +232,25 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		ManifestFile:      sync.MakeDefaultOptions().ManifestFile,
 		GitImplementation: sourceGitArgs.gitImplementation.String(),
 	}
-	if bootstrapArgs.tokenAuth {
-		syncOpts.URL = repoOpts.GetCloneURL(gitprovider.TransportTypeHTTPS)
-	}
+
+	bootstrapper := bootstrap.NewGitProviderBootstrapper(
+		githubArgs.owner,
+		githubArgs.repository,
+		bootstrapArgs.branch,
+		githubArgs.personal,
+		git.Author{Name: "", Email: ""},
+		rootArgs.kubeconfig,
+		rootArgs.kubecontext,
+		"",
+		"",
+		"",
+		map[string]string{},
+		gitClient,
+		providerClient,
+		kubeClient,
+		logger,
+	)
 
 	// Run
-	return b.Reconcile(ctx, manifestsBase, installOptions, secretOpts, syncOpts, repoOpts, repoInfo)
+	return bootstrap.Run(ctx, bootstrapper, manifestsBase, installOptions, secretOpts, syncOpts, rootArgs.pollInterval, rootArgs.timeout)
 }
