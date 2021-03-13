@@ -37,7 +37,9 @@ import (
 	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
 )
 
-var ErrReconciledWithWarning = errors.New("reconciled with warning")
+var (
+	ErrReconciledWithWarning = errors.New("reconciled with warning")
+)
 
 type Reconciler interface {
 	// ReconcileComponents reconciles the components by generating the
@@ -50,19 +52,22 @@ type Reconciler interface {
 	// a new secret with the provided values if the secret does not
 	// already exists on the cluster, or if any of the configuration
 	// options changed. Before the secret is applied to the cluster
-	// the PostGenerateSecretCallback is called, any errors returned
+	// the PostGenerateSecretFunc is called, any errors returned
 	// by this callback will abort the reconciliation process.
-	ReconcileSourceSecret(ctx context.Context, options sourcesecret.Options, postGenerate PostGenerateSecretCallback) error
+	ReconcileSourceSecret(ctx context.Context, options sourcesecret.Options, postGenerate PostGenerateSecretFunc) error
 
-	// ReconcileSyncConfig
+	// ReconcileSyncConfig reconciles the sync configuration by generating
+	// the sync manifests with the provided values, committing them to Git
+	// and pushing to remote if there are any changes.
 	ReconcileSyncConfig(ctx context.Context, options sync.Options, pollInterval, timeout time.Duration) error
 }
 
 type RepositoryReconciler interface {
+	// ReconcileRepository reconciles an external Git repository.
 	ReconcileRepository(ctx context.Context) error
 }
 
-type PostGenerateSecretCallback func(ctx context.Context, secret corev1.Secret) error
+type PostGenerateSecretFunc func(ctx context.Context, secret corev1.Secret) error
 
 func Run(ctx context.Context, reconciler Reconciler, manifestsBase string,
 	installOpts install.Options, secretOpts sourcesecret.Options, syncOpts sync.Options,
@@ -78,7 +83,6 @@ func Run(ctx context.Context, reconciler Reconciler, manifestsBase string,
 	if err := reconciler.ReconcileComponents(ctx, manifestsBase, installOpts); err != nil {
 		return err
 	}
-
 	if err := reconciler.ReconcileSourceSecret(ctx, secretOpts, nil); err != nil {
 		return err
 	}
@@ -89,7 +93,7 @@ func Run(ctx context.Context, reconciler Reconciler, manifestsBase string,
 	return err
 }
 
-func shouldInstallManifests(ctx context.Context, kube client.Client, namespace string) bool {
+func mustInstallManifests(ctx context.Context, kube client.Client, namespace string) bool {
 	namespacedName := types.NamespacedName{
 		Namespace: namespace,
 		Name:      namespace,

@@ -62,6 +62,8 @@ type bootstrapFlags struct {
 	tokenAuth          bool
 	clusterDomain      string
 	tolerationKeys     []string
+	authorName         string
+	authorEmail        string
 }
 
 const (
@@ -95,6 +97,8 @@ func init() {
 	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.clusterDomain, "cluster-domain", rootArgs.defaults.ClusterDomain, "internal cluster domain")
 	bootstrapCmd.PersistentFlags().StringSliceVar(&bootstrapArgs.tolerationKeys, "toleration-keys", nil,
 		"list of toleration keys used to schedule the components pods onto nodes with matching taints")
+	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.authorName, "author-name", "", "author name for Git commits")
+	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.authorEmail, "author-email", "", "author email for Git commits")
 	bootstrapCmd.PersistentFlags().MarkHidden("manifests")
 	bootstrapCmd.PersistentFlags().MarkDeprecated("arch", "multi-arch container image is now available for AMD64, ARMv7 and ARM64")
 	rootCmd.AddCommand(bootstrapCmd)

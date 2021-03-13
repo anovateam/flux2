@@ -41,9 +41,11 @@ import (
 )
 
 type PlainGitBootstrapper struct {
-	url         string
-	branch      string
-	author      git.Author
+	url    string
+	branch string
+
+	author git.Author
+
 	kubeconfig  string
 	kubecontext string
 
@@ -52,20 +54,29 @@ type PlainGitBootstrapper struct {
 	logger log.Logger
 }
 
-// TODO(hidde): move all the knobs to option flags
-func NewPlainGitBootstrapper(url, branch string, author git.Author, kubeconfig, kubecontext string,
-	git git.Git, kube client.Client, logger log.Logger) *PlainGitBootstrapper {
-	return &PlainGitBootstrapper{
-		url:         url,
-		branch:      branch,
-		author:      author,
-		kubeconfig:  kubeconfig,
-		kubecontext: kubecontext,
+type GitOption interface {
+	applyGit(b *PlainGitBootstrapper)
+}
 
-		git:    git,
-		kube:   kube,
-		logger: logger,
+func WithRepositoryURL(url string) GitOption {
+	return repositoryURLOption(url)
+}
+
+type repositoryURLOption string
+
+func (o repositoryURLOption) applyGit(b *PlainGitBootstrapper) {
+	b.url = string(o)
+}
+
+func NewPlainGitProvider(git git.Git, kube client.Client, opts ...GitOption) (*PlainGitBootstrapper, error) {
+	b := &PlainGitBootstrapper{
+		git:  git,
+		kube: kube,
 	}
+	for _, opt := range opts {
+		opt.applyGit(b)
+	}
+	return b, nil
 }
 
 func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifestsBase string, options install.Options) error {
@@ -75,7 +86,7 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 			return err
 		}
 
-		b.logger.Actionf("cloning Git repository from %s (%s)", b.url, b.branch)
+		b.logger.Actionf("cloning branch %q from Git repository %q", b.branch, b.url)
 		cloned, err := b.git.Clone(ctx, b.url, b.branch)
 		if err != nil {
 			return fmt.Errorf("failed to clone repository: %w", err)
@@ -95,11 +106,11 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 
 	// Write manifest to Git repository
 	if err = b.git.Write(manifests.Path, strings.NewReader(manifests.Content)); err != nil {
-		return fmt.Errorf("failed to write manifest %s: %w", manifests.Path, err)
+		return fmt.Errorf("failed to write manifest %q: %w", manifests.Path, err)
 	}
 
 	// Git commit generated
-	head, err := b.git.Commit(git.Commit{
+	commit, err := b.git.Commit(git.Commit{
 		Author:  b.author,
 		Message: fmt.Sprintf("Add Flux %s component manifests", options.Version),
 	})
@@ -107,8 +118,8 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 		return fmt.Errorf("failed to commit sync manifests: %w", err)
 	}
 	if err == nil {
-		b.logger.Successf("committed component manifests in %s (%s)", b.branch, head)
-		b.logger.Actionf("pushing component manifests to %s", b.url)
+		b.logger.Successf("committed sync manifests to %q (%q)", b.branch, commit)
+		b.logger.Actionf("pushing component manifests to %q", b.url)
 		if err = b.git.Push(ctx); err != nil {
 			return fmt.Errorf("failed to push manifests: %w", err)
 		}
@@ -117,8 +128,8 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 	}
 
 	// Conditionally install manifests
-	if shouldInstallManifests(ctx, b.kube, options.Namespace) {
-		b.logger.Actionf("installing components in %s namespace", options.Namespace)
+	if mustInstallManifests(ctx, b.kube, options.Namespace) {
+		b.logger.Actionf("installing components in %q namespace", options.Namespace)
 		kubectlArgs := []string{"apply", "-f", filepath.Join(b.git.Path(), manifests.Path)}
 		if _, err = utils.ExecKubectlCommand(ctx, utils.ModeStderrOS, b.kubeconfig, b.kubecontext, kubectlArgs...); err != nil {
 			return err
@@ -130,10 +141,10 @@ func (b *PlainGitBootstrapper) ReconcileComponents(ctx context.Context, manifest
 	return nil
 }
 
-func (b *PlainGitBootstrapper) ReconcileSourceSecret(ctx context.Context, options sourcesecret.Options, callback PostGenerateSecretCallback) error {
+func (b *PlainGitBootstrapper) ReconcileSourceSecret(ctx context.Context, options sourcesecret.Options, callback PostGenerateSecretFunc) error {
 	// Determine if there is an existing secret
 	secretKey := client.ObjectKey{Name: options.Name, Namespace: options.Namespace}
-	b.logger.Actionf("determining if source secret %s exists", secretKey)
+	b.logger.Actionf("determining if source secret %q exists", secretKey)
 	ok, err := secretExists(ctx, b.kube, secretKey)
 	if err != nil {
 		return fmt.Errorf("failed to determine if deploy key secret exists: %w", err)
@@ -163,7 +174,7 @@ func (b *PlainGitBootstrapper) ReconcileSourceSecret(ctx context.Context, option
 	}
 
 	// Apply source secret
-	b.logger.Actionf("applying source secret %s", secret.Name)
+	b.logger.Actionf("applying source secret %q", secretKey)
 	if err = reconcileSecret(ctx, b.kube, secret); err != nil {
 		return err
 	}
@@ -176,7 +187,7 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 	// Clone if not already
 	if _, err := b.git.Status(); err != nil {
 		if err == git.ErrNoGitRepository {
-			b.logger.Actionf("cloning Git repository from %s", b.url)
+			b.logger.Actionf("cloning branch %q from Git repository %q", b.branch, b.url)
 			cloned, err := b.git.Clone(ctx, b.url, b.branch)
 			if err != nil {
 				return fmt.Errorf("failed to clone repository: %w", err)
@@ -195,7 +206,7 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 		return fmt.Errorf("sync manifests generation failed: %w", err)
 	}
 	if err = b.git.Write(manifests.Path, strings.NewReader(manifests.Content)); err != nil {
-		return fmt.Errorf("failed to write manifest %s: %w", manifests.Path, err)
+		return fmt.Errorf("failed to write manifest %q: %w", manifests.Path, err)
 	}
 	kusManifests, err := kustomization.Generate(kustomization.Options{
 		FileSystem: filesys.MakeFsOnDisk(),
@@ -206,7 +217,7 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 		return fmt.Errorf("kustomization.yaml generation failed: %w", err)
 	}
 	if err = b.git.Write(kusManifests.Path, strings.NewReader(kusManifests.Content)); err != nil {
-		return fmt.Errorf("failed to write manifest %s: %w", kusManifests.Path, err)
+		return fmt.Errorf("failed to write manifest %q: %w", kusManifests.Path, err)
 	}
 	b.logger.Successf("generated sync manifests")
 
@@ -219,8 +230,8 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 		return fmt.Errorf("failed to commit sync manifests: %w", err)
 	}
 	if err == nil {
-		b.logger.Successf("committed sync manifests in %s (%s)", options.Branch, commit)
-		b.logger.Actionf("pushing sync manifests to %s", b.url)
+		b.logger.Successf("committed sync manifests to %q (%q)", b.branch, commit)
+		b.logger.Actionf("pushing sync manifests to %q", b.url)
 		if err = b.git.Push(ctx); err != nil {
 			return fmt.Errorf("failed to push sync manifests: %w", err)
 		}

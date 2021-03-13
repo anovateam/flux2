@@ -53,6 +53,7 @@ flux bootstrap github [flags]
       --path safeRelativePath   path relative to the repository root, when specified the cluster sync will be scoped to this path
       --personal                if true, the owner is assumed to be a GitHub user; otherwise an org
       --private                 if true, the repository is assumed to be private (default true)
+      --read-write-key          if true, the deploy key is configured with read/write permissions
       --repository string       GitHub repository name
       --ssh-hostname string     GitHub SSH hostname, to be used when the SSH host differs from the HTTPS one
       --team stringArray        GitHub team to be given maintainer access
@@ -61,6 +62,8 @@ flux bootstrap github [flags]
 ### Options inherited from parent commands
 
 ```
+      --author-email string        author email for Git commits
+      --author-name string         author name for Git commits
       --branch string              default branch (for GitHub this must match the default branch setting for the organization) (default "main")
       --cluster-domain string      internal cluster domain (default "cluster.local")
       --components strings         list of components, accepts comma-separated values (default [source-controller,kustomize-controller,helm-controller,notification-controller])

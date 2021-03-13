@@ -57,6 +57,8 @@ flux bootstrap gitlab [flags]
 ### Options inherited from parent commands
 
 ```
+      --author-email string        author email for Git commits
+      --author-name string         author name for Git commits
       --branch string              default branch (for GitHub this must match the default branch setting for the organization) (default "main")
       --cluster-domain string      internal cluster domain (default "cluster.local")
       --components strings         list of components, accepts comma-separated values (default [source-controller,kustomize-controller,helm-controller,notification-controller])

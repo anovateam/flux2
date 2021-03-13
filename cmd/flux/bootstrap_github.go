@@ -30,7 +30,6 @@ import (
 	"github.com/fluxcd/flux2/internal/flags"
 	"github.com/fluxcd/flux2/internal/utils"
 	"github.com/fluxcd/flux2/pkg/bootstrap"
-	"github.com/fluxcd/flux2/pkg/bootstrap/git"
 	"github.com/fluxcd/flux2/pkg/bootstrap/git/gogit"
 	"github.com/fluxcd/flux2/pkg/bootstrap/provider"
 	"github.com/fluxcd/flux2/pkg/manifestgen/install"
@@ -74,15 +73,16 @@ the bootstrap command will perform an upgrade if needed.`,
 }
 
 type githubFlags struct {
-	owner       string
-	repository  string
-	interval    time.Duration
-	personal    bool
-	private     bool
-	hostname    string
-	path        flags.SafeRelativePath
-	teams       []string
-	sshHostname string
+	owner        string
+	repository   string
+	interval     time.Duration
+	personal     bool
+	private      bool
+	hostname     string
+	sshHostname  string
+	path         flags.SafeRelativePath
+	teams        []string
+	readWriteKey bool
 }
 
 const (
@@ -103,6 +103,7 @@ func init() {
 	bootstrapGitHubCmd.Flags().StringVar(&githubArgs.hostname, "hostname", ghDefaultDomain, "GitHub hostname")
 	bootstrapGitHubCmd.Flags().StringVar(&githubArgs.sshHostname, "ssh-hostname", "", "GitHub SSH hostname, to be used when the SSH host differs from the HTTPS one")
 	bootstrapGitHubCmd.Flags().Var(&githubArgs.path, "path", "path relative to the repository root, when specified the cluster sync will be scoped to this path")
+	bootstrapGitHubCmd.Flags().BoolVar(&githubArgs.readWriteKey, "read-write-key", false, "if true, the deploy key is configured with read/write permissions")
 
 	bootstrapCmd.AddCommand(bootstrapGitHubCmd)
 }
@@ -233,24 +234,44 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		GitImplementation: sourceGitArgs.gitImplementation.String(),
 	}
 
-	bootstrapper := bootstrap.NewGitProviderBootstrapper(
-		githubArgs.owner,
-		githubArgs.repository,
-		bootstrapArgs.branch,
-		githubArgs.personal,
-		git.Author{Name: "", Email: ""},
-		rootArgs.kubeconfig,
-		rootArgs.kubecontext,
-		"",
-		"",
-		"",
-		map[string]string{},
-		gitClient,
-		providerClient,
-		kubeClient,
-		logger,
-	)
+	// Bootstrap config
+	bootstrapOpts := []bootstrap.GitProviderOption{
+		bootstrap.WithProviderRepository(githubArgs.owner, githubArgs.repository, githubArgs.personal),
+		bootstrap.WithBranch(bootstrapArgs.branch),
+		bootstrap.WithBootstrapTransportType("https"),
+		bootstrap.WithAuthor("Flux", githubArgs.owner+"@users.noreply.github.com"),
+		bootstrap.WithProviderTeamPermissions(mapTeamSlice(githubArgs.teams)),
+		bootstrap.WithReadWriteKeyPermissions(githubArgs.readWriteKey),
+		bootstrap.WithKubeconfig(rootArgs.kubeconfig, rootArgs.kubecontext),
+		bootstrap.WithLogger(logger),
+	}
+	if githubArgs.sshHostname != "" {
+		bootstrapOpts = append(bootstrapOpts, bootstrap.WithSSHHostname(githubArgs.sshHostname))
+	}
+	if bootstrapArgs.tokenAuth {
+		bootstrapOpts = append(bootstrapOpts, bootstrap.WithSyncTransportType("https"))
+	}
+	if bootstrapArgs.authorName != "" || bootstrapArgs.authorEmail != "" {
+		bootstrapOpts = append(bootstrapOpts, bootstrap.WithAuthor(bootstrapArgs.authorName, bootstrapArgs.authorEmail))
+	}
+	if !githubArgs.private {
+		bootstrapOpts = append(bootstrapOpts, bootstrap.WithProviderRepositoryConfig("", "", "public"))
+	}
+
+	// Setup bootstrapper with constructed configs
+	b, err := bootstrap.NewGitProviderBootstrapper(gitClient, providerClient, kubeClient, bootstrapOpts...)
+	if err != nil {
+		return err
+	}
 
 	// Run
-	return bootstrap.Run(ctx, bootstrapper, manifestsBase, installOptions, secretOpts, syncOpts, rootArgs.pollInterval, rootArgs.timeout)
+	return bootstrap.Run(ctx, b, manifestsBase, installOptions, secretOpts, syncOpts, rootArgs.pollInterval, rootArgs.timeout)
+}
+
+func mapTeamSlice(s []string) map[string]string {
+	m := make(map[string]string, len(s))
+	for _, v := range s {
+		m[v] = ghDefaultPermission
+	}
+	return m
 }

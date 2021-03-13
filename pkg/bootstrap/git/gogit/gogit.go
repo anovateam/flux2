@@ -32,20 +32,20 @@ import (
 	"github.com/fluxcd/flux2/pkg/bootstrap/git"
 )
 
-type goGit struct {
+type GoGit struct {
 	path       string
 	auth       transport.AuthMethod
 	repository *gogit.Repository
 }
 
-func New(path string, auth transport.AuthMethod) git.Git {
-	return &goGit{
+func New(path string, auth transport.AuthMethod) *GoGit {
+	return &GoGit{
 		path: path,
 		auth: auth,
 	}
 }
 
-func (g *goGit) Init(url, branch string) (bool, error) {
+func (g *GoGit) Init(url, branch string) (bool, error) {
 	if g.repository != nil {
 		return false, nil
 	}
@@ -80,7 +80,7 @@ func (g *goGit) Init(url, branch string) (bool, error) {
 	return true, nil
 }
 
-func (g *goGit) Clone(ctx context.Context, url, branch string) (bool, error) {
+func (g *GoGit) Clone(ctx context.Context, url, branch string) (bool, error) {
 	branchRef := plumbing.NewBranchReferenceName(branch)
 	r, err := gogit.PlainCloneContext(ctx, g.path, false, &gogit.CloneOptions{
 		URL:           url,
@@ -104,7 +104,7 @@ func (g *goGit) Clone(ctx context.Context, url, branch string) (bool, error) {
 	return true, nil
 }
 
-func (g *goGit) Write(path string, reader io.Reader) error {
+func (g *GoGit) Write(path string, reader io.Reader) error {
 	if g.repository == nil {
 		return git.ErrNoGitRepository
 	}
@@ -124,7 +124,7 @@ func (g *goGit) Write(path string, reader io.Reader) error {
 	return err
 }
 
-func (g *goGit) Commit(message git.Commit) (string, error) {
+func (g *GoGit) Commit(message git.Commit) (string, error) {
 	if g.repository == nil {
 		return "", git.ErrNoGitRepository
 	}
@@ -162,7 +162,7 @@ func (g *goGit) Commit(message git.Commit) (string, error) {
 	return commit.String(), nil
 }
 
-func (g *goGit) Push(ctx context.Context) error {
+func (g *GoGit) Push(ctx context.Context) error {
 	if g.repository == nil {
 		return git.ErrNoGitRepository
 	}
@@ -174,7 +174,7 @@ func (g *goGit) Push(ctx context.Context) error {
 	})
 }
 
-func (g *goGit) Status() (bool, error) {
+func (g *GoGit) Status() (bool, error) {
 	if g.repository == nil {
 		return false, git.ErrNoGitRepository
 	}
@@ -189,7 +189,7 @@ func (g *goGit) Status() (bool, error) {
 	return status.IsClean(), nil
 }
 
-func (g *goGit) Path() string {
+func (g *GoGit) Path() string {
 	return g.path
 }
 
