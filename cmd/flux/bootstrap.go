@@ -17,27 +17,13 @@ limitations under the License.
 package main
 
 import (
-	"context"
 	"fmt"
-	"path/filepath"
-	"strings"
-	"time"
+	"io/ioutil"
 
 	"github.com/spf13/cobra"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
-	kustomizev1 "github.com/fluxcd/kustomize-controller/api/v1beta1"
-	sourcev1 "github.com/fluxcd/source-controller/api/v1beta1"
 
 	"github.com/fluxcd/flux2/internal/flags"
 	"github.com/fluxcd/flux2/internal/utils"
-	"github.com/fluxcd/flux2/pkg/manifestgen/install"
-	kus "github.com/fluxcd/flux2/pkg/manifestgen/kustomization"
-	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
-	"github.com/fluxcd/flux2/pkg/status"
 )
 
 var bootstrapCmd = &cobra.Command{
@@ -64,6 +50,7 @@ type bootstrapFlags struct {
 	tolerationKeys     []string
 	authorName         string
 	authorEmail        string
+	secretName         string
 }
 
 const (
@@ -97,8 +84,9 @@ func init() {
 	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.clusterDomain, "cluster-domain", rootArgs.defaults.ClusterDomain, "internal cluster domain")
 	bootstrapCmd.PersistentFlags().StringSliceVar(&bootstrapArgs.tolerationKeys, "toleration-keys", nil,
 		"list of toleration keys used to schedule the components pods onto nodes with matching taints")
-	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.authorName, "author-name", "", "author name for Git commits")
+	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.authorName, "author-name", "Flux", "author name for Git commits")
 	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.authorEmail, "author-email", "", "author email for Git commits")
+	bootstrapCmd.PersistentFlags().StringVar(&bootstrapArgs.secretName, "secret-name", rootArgs.defaults.Namespace, "name of the secret the sync credentials can be found in or stored to")
 	bootstrapCmd.PersistentFlags().MarkHidden("manifests")
 	bootstrapCmd.PersistentFlags().MarkDeprecated("arch", "multi-arch container image is now available for AMD64, ARMv7 and ARM64")
 	rootCmd.AddCommand(bootstrapCmd)
@@ -113,6 +101,20 @@ func NewBootstrapFlags() bootstrapFlags {
 
 func bootstrapComponents() []string {
 	return append(bootstrapArgs.defaultComponents, bootstrapArgs.extraComponents...)
+}
+
+func buildEmbeddedManifestBase() (string, error) {
+	if !isEmbeddedVersion(bootstrapArgs.version) {
+		return "", nil
+	}
+	tmpBaseDir, err := ioutil.TempDir("", "flux-manifests-")
+	if err != nil {
+		return "", err
+	}
+	if err := writeEmbeddedManifests(tmpBaseDir); err != nil {
+		return "", err
+	}
+	return tmpBaseDir, nil
 }
 
 func bootstrapValidate() error {
@@ -130,179 +132,10 @@ func bootstrapValidate() error {
 	return nil
 }
 
-func generateInstallManifests(targetPath, namespace, tmpDir string, localManifests string) (string, error) {
-	if ver, err := getVersion(bootstrapArgs.version); err != nil {
-		return "", err
-	} else {
-		bootstrapArgs.version = ver
+func mapTeamSlice(s []string, defaultPermission string) map[string]string {
+	m := make(map[string]string, len(s))
+	for _, v := range s {
+		m[v] = defaultPermission
 	}
-
-	manifestsBase := ""
-	if isEmbeddedVersion(bootstrapArgs.version) {
-		if err := writeEmbeddedManifests(tmpDir); err != nil {
-			return "", err
-		}
-		manifestsBase = tmpDir
-	}
-
-	opts := install.Options{
-		BaseURL:                localManifests,
-		Version:                bootstrapArgs.version,
-		Namespace:              namespace,
-		Components:             bootstrapComponents(),
-		Registry:               bootstrapArgs.registry,
-		ImagePullSecret:        bootstrapArgs.imagePullSecret,
-		WatchAllNamespaces:     bootstrapArgs.watchAllNamespaces,
-		NetworkPolicy:          bootstrapArgs.networkPolicy,
-		LogLevel:               bootstrapArgs.logLevel.String(),
-		NotificationController: rootArgs.defaults.NotificationController,
-		ManifestFile:           rootArgs.defaults.ManifestFile,
-		Timeout:                rootArgs.timeout,
-		TargetPath:             targetPath,
-		ClusterDomain:          bootstrapArgs.clusterDomain,
-		TolerationKeys:         bootstrapArgs.tolerationKeys,
-	}
-
-	if localManifests == "" {
-		opts.BaseURL = rootArgs.defaults.BaseURL
-	}
-
-	output, err := install.Generate(opts, manifestsBase)
-	if err != nil {
-		return "", fmt.Errorf("generating install manifests failed: %w", err)
-	}
-
-	filePath, err := output.WriteFile(tmpDir)
-	if err != nil {
-		return "", fmt.Errorf("generating install manifests failed: %w", err)
-	}
-	return filePath, nil
-}
-
-func applyInstallManifests(ctx context.Context, manifestPath string, components []string) error {
-	kubectlArgs := []string{"apply", "-f", manifestPath}
-	if _, err := utils.ExecKubectlCommand(ctx, utils.ModeOS, rootArgs.kubeconfig, rootArgs.kubecontext, kubectlArgs...); err != nil {
-		return fmt.Errorf("install failed: %w", err)
-	}
-	kubeConfig, err := utils.KubeConfig(rootArgs.kubeconfig, rootArgs.kubecontext)
-	if err != nil {
-		return fmt.Errorf("install failed: %w", err)
-	}
-	statusChecker, err := status.NewStatusChecker(kubeConfig, time.Second, rootArgs.timeout, logger)
-	if err != nil {
-		return fmt.Errorf("install failed: %w", err)
-	}
-	componentRefs, err := buildComponentObjectRefs(components...)
-	if err != nil {
-		return fmt.Errorf("install failed: %w", err)
-	}
-	logger.Waitingf("verifying installation")
-	if err := statusChecker.Assess(componentRefs...); err != nil {
-		return fmt.Errorf("install failed")
-	}
-	return nil
-}
-
-func generateSyncManifests(url, branch, name, namespace, targetPath, tmpDir string, interval time.Duration) (string, error) {
-	opts := sync.Options{
-		Name:         name,
-		Namespace:    namespace,
-		URL:          url,
-		Branch:       branch,
-		Interval:     interval,
-		Secret:       namespace,
-		TargetPath:   targetPath,
-		ManifestFile: sync.MakeDefaultOptions().ManifestFile,
-	}
-
-	manifest, err := sync.Generate(opts)
-	if err != nil {
-		return "", fmt.Errorf("generating install manifests failed: %w", err)
-	}
-
-	output, err := manifest.WriteFile(tmpDir)
-	if err != nil {
-		return "", err
-	}
-	outputDir := filepath.Dir(output)
-
-	kusOpts := kus.MakeDefaultOptions()
-	kusOpts.BaseDir = tmpDir
-	kusOpts.TargetPath = filepath.Dir(manifest.Path)
-
-	kustomization, err := kus.Generate(kusOpts)
-	if err != nil {
-		return "", err
-	}
-	if _, err = kustomization.WriteFile(tmpDir); err != nil {
-		return "", err
-	}
-
-	return outputDir, nil
-}
-
-func applySyncManifests(ctx context.Context, kubeClient client.Client, name, namespace, manifestsPath string) error {
-	kubectlArgs := []string{"apply", "-k", manifestsPath}
-	if _, err := utils.ExecKubectlCommand(ctx, utils.ModeStderrOS, rootArgs.kubeconfig, rootArgs.kubecontext, kubectlArgs...); err != nil {
-		return err
-	}
-
-	logger.Waitingf("waiting for cluster sync")
-
-	var gitRepository sourcev1.GitRepository
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isGitRepositoryReady(ctx, kubeClient, types.NamespacedName{Name: name, Namespace: namespace}, &gitRepository)); err != nil {
-		return err
-	}
-
-	var kustomization kustomizev1.Kustomization
-	if err := wait.PollImmediate(rootArgs.pollInterval, rootArgs.timeout,
-		isKustomizationReady(ctx, kubeClient, types.NamespacedName{Name: name, Namespace: namespace}, &kustomization)); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func shouldInstallManifests(ctx context.Context, kubeClient client.Client, namespace string) bool {
-	namespacedName := types.NamespacedName{
-		Namespace: namespace,
-		Name:      namespace,
-	}
-	var kustomization kustomizev1.Kustomization
-	if err := kubeClient.Get(ctx, namespacedName, &kustomization); err != nil {
-		return true
-	}
-
-	return kustomization.Status.LastAppliedRevision == ""
-}
-
-func shouldCreateDeployKey(ctx context.Context, kubeClient client.Client, namespace string) bool {
-	namespacedName := types.NamespacedName{
-		Namespace: namespace,
-		Name:      namespace,
-	}
-
-	var existing corev1.Secret
-	if err := kubeClient.Get(ctx, namespacedName, &existing); err != nil {
-		return true
-	}
-	return false
-}
-
-func checkIfBootstrapPathDiffers(ctx context.Context, kubeClient client.Client, namespace string, path string) (string, bool) {
-	namespacedName := types.NamespacedName{
-		Name:      namespace,
-		Namespace: namespace,
-	}
-	var fluxSystemKustomization kustomizev1.Kustomization
-	err := kubeClient.Get(ctx, namespacedName, &fluxSystemKustomization)
-	if err != nil {
-		return "", false
-	}
-	if fluxSystemKustomization.Spec.Path == fmt.Sprintf("./%s", strings.TrimPrefix(path, "./")) {
-		return "", false
-	}
-
-	return fluxSystemKustomization.Spec.Path, true
+	return m
 }

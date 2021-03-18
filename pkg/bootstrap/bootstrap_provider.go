@@ -169,7 +169,7 @@ func (o sshHostnameOption) applyGitProvider(b *GitProviderBootstrapper) {
 func (b *GitProviderBootstrapper) ReconcileSourceSecret(ctx context.Context, options sourcesecret.Options, postGenerate PostGenerateSecretFunc) error {
 	var reconcileDeployKey PostGenerateSecretFunc = func(ctx context.Context, secret corev1.Secret) error {
 		if ppk, ok := secret.StringData[sourcesecret.PublicKeySecretKey]; ok {
-			name := fmt.Sprintf("%s-%s-%s", options.Namespace, b.PlainGitBootstrapper.branch, options.TargetPath)
+			name := deployKeyName(options.Namespace, b.branch, options.Name, options.TargetPath)
 			if err := b.reconcileDeployKey(ctx, name, ppk); err != nil {
 				return err
 			}
@@ -302,7 +302,7 @@ func (b *GitProviderBootstrapper) reconcileOrgRepository(ctx context.Context) (g
 	// reconciliation of the others)
 	var warning error
 	if count := len(teamAccessInfo); count > 0 {
-		b.logger.Actionf("reconciling repository permissions of %d teams", count)
+		b.logger.Actionf("reconciling repository permissions", count)
 		for _, i := range teamAccessInfo {
 			var err error
 			_, changed, err = repo.TeamAccess().Reconcile(ctx, i)
@@ -507,6 +507,21 @@ func newDeployKeyInfo(name, publicKey string, readWrite bool) gitprovider.Deploy
 		keyInfo.ReadOnly = gitprovider.BoolVar(false)
 	}
 	return keyInfo
+}
+
+func deployKeyName(namespace, secretName, branch, path string) string {
+	var name string
+	for _, v := range []string{namespace, secretName, branch, path} {
+		if v == "" {
+			continue
+		}
+		if name == "" {
+			name = v
+		} else {
+			name = name + "-" + v
+		}
+	}
+	return name
 }
 
 // setHostname is a helper to replace the hostname of the given URL.

@@ -24,7 +24,9 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"sigs.k8s.io/cli-utils/pkg/object"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/kustomize/api/filesys"
 	"sigs.k8s.io/yaml"
@@ -38,6 +40,7 @@ import (
 	"github.com/fluxcd/flux2/pkg/manifestgen/kustomization"
 	"github.com/fluxcd/flux2/pkg/manifestgen/sourcesecret"
 	"github.com/fluxcd/flux2/pkg/manifestgen/sync"
+	"github.com/fluxcd/flux2/pkg/status"
 )
 
 type PlainGitBootstrapper struct {
@@ -257,5 +260,36 @@ func (b *PlainGitBootstrapper) ReconcileSyncConfig(ctx context.Context, options 
 	}
 
 	b.logger.Successf("reconciled sync configuration")
+	return nil
+}
+
+func (b *PlainGitBootstrapper) ConfirmHealthy(ctx context.Context, install install.Options, timeout time.Duration) error {
+	cfg, err := utils.KubeConfig(b.kubeconfig, b.kubecontext)
+	if err != nil {
+		return err
+	}
+
+	checker, err := status.NewStatusChecker(cfg, 2*time.Second, timeout, b.logger)
+	if err != nil {
+		return err
+	}
+
+	var components = install.Components
+	components = append(components, install.ComponentsExtra...)
+
+	var identifiers []object.ObjMetadata
+	for _, component := range components {
+		identifiers = append(identifiers, object.ObjMetadata{
+			Namespace: install.Namespace,
+			Name:      component,
+			GroupKind: schema.GroupKind{Group: "apps", Kind: "Deployment"},
+		})
+	}
+
+	b.logger.Actionf("confirming components are healthy")
+	if err := checker.Assess(identifiers...); err != nil {
+		return err
+	}
+	b.logger.Successf("all components are healthy")
 	return nil
 }

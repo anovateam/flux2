@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport/http"
@@ -126,37 +125,15 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	usedPath, bootstrapPathDiffers := checkIfBootstrapPathDiffers(
-		ctx,
-		kubeClient,
-		rootArgs.namespace,
-		filepath.ToSlash(githubArgs.path.String()),
-	)
-
-	if bootstrapPathDiffers {
-		return fmt.Errorf("cluster already bootstrapped to %v path", usedPath)
-	}
-
 	// Manifest base
-	// TODO(hidde): move?
-	if ver, err := getVersion(bootstrapArgs.version); err != nil {
-		return err
-	} else {
+	if ver, err := getVersion(bootstrapArgs.version); err == nil {
 		bootstrapArgs.version = ver
 	}
-
-	manifestsBase := ""
-	if isEmbeddedVersion(bootstrapArgs.version) {
-		tmpBaseDir, err := ioutil.TempDir("", "flux-manifests-")
-		if err != nil {
-			return err
-		}
-		defer os.RemoveAll(tmpBaseDir)
-		if err := writeEmbeddedManifests(tmpBaseDir); err != nil {
-			return err
-		}
-		manifestsBase = tmpBaseDir
+	manifestsBase, err := buildEmbeddedManifestBase()
+	if err != nil {
+		return err
 	}
+	defer os.RemoveAll(manifestsBase)
 
 	// Build GitHub provider
 	providerCfg := provider.Config{
@@ -205,7 +182,7 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 
 	// Source generation and secret config
 	secretOpts := sourcesecret.Options{
-		Name:         rootArgs.namespace,
+		Name:         bootstrapArgs.secretName,
 		Namespace:    rootArgs.namespace,
 		TargetPath:   githubArgs.path.String(),
 		ManifestFile: sourcesecret.MakeDefaultOptions().ManifestFile,
@@ -213,10 +190,16 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 	if bootstrapArgs.tokenAuth {
 		secretOpts.Username = "git"
 		secretOpts.Password = ghToken
+
+		if secretGitArgs.caFile != "" {
+			secretOpts.CAFilePath = secretGitArgs.caFile
+		}
 	} else {
-		secretOpts.PrivateKeyAlgorithm = sourcesecret.RSAPrivateKeyAlgorithm
-		secretOpts.RSAKeyBits = 2048
+		secretOpts.PrivateKeyAlgorithm = sourcesecret.PrivateKeyAlgorithm(secretGitArgs.keyAlgorithm)
+		secretOpts.RSAKeyBits = int(secretGitArgs.rsaBits)
+		secretOpts.ECDSACurve = secretGitArgs.ecdsaCurve.Curve
 		secretOpts.SSHHostname = githubArgs.hostname
+
 		if githubArgs.sshHostname != "" {
 			secretOpts.SSHHostname = githubArgs.sshHostname
 		}
@@ -228,7 +211,7 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		Name:              rootArgs.namespace,
 		Namespace:         rootArgs.namespace,
 		Branch:            bootstrapArgs.branch,
-		Secret:            rootArgs.namespace,
+		Secret:            bootstrapArgs.secretName,
 		TargetPath:        githubArgs.path.String(),
 		ManifestFile:      sync.MakeDefaultOptions().ManifestFile,
 		GitImplementation: sourceGitArgs.gitImplementation.String(),
@@ -239,8 +222,8 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 		bootstrap.WithProviderRepository(githubArgs.owner, githubArgs.repository, githubArgs.personal),
 		bootstrap.WithBranch(bootstrapArgs.branch),
 		bootstrap.WithBootstrapTransportType("https"),
-		bootstrap.WithAuthor("Flux", githubArgs.owner+"@users.noreply.github.com"),
-		bootstrap.WithProviderTeamPermissions(mapTeamSlice(githubArgs.teams)),
+		bootstrap.WithAuthor(bootstrapArgs.authorName, bootstrapArgs.authorEmail),
+		bootstrap.WithProviderTeamPermissions(mapTeamSlice(githubArgs.teams, ghDefaultPermission)),
 		bootstrap.WithReadWriteKeyPermissions(githubArgs.readWriteKey),
 		bootstrap.WithKubeconfig(rootArgs.kubeconfig, rootArgs.kubecontext),
 		bootstrap.WithLogger(logger),
@@ -250,9 +233,6 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 	}
 	if bootstrapArgs.tokenAuth {
 		bootstrapOpts = append(bootstrapOpts, bootstrap.WithSyncTransportType("https"))
-	}
-	if bootstrapArgs.authorName != "" || bootstrapArgs.authorEmail != "" {
-		bootstrapOpts = append(bootstrapOpts, bootstrap.WithAuthor(bootstrapArgs.authorName, bootstrapArgs.authorEmail))
 	}
 	if !githubArgs.private {
 		bootstrapOpts = append(bootstrapOpts, bootstrap.WithProviderRepositoryConfig("", "", "public"))
@@ -266,12 +246,4 @@ func bootstrapGitHubCmdRun(cmd *cobra.Command, args []string) error {
 
 	// Run
 	return bootstrap.Run(ctx, b, manifestsBase, installOptions, secretOpts, syncOpts, rootArgs.pollInterval, rootArgs.timeout)
-}
-
-func mapTeamSlice(s []string) map[string]string {
-	m := make(map[string]string, len(s))
-	for _, v := range s {
-		m[v] = ghDefaultPermission
-	}
-	return m
 }

@@ -60,6 +60,10 @@ type Reconciler interface {
 	// the sync manifests with the provided values, committing them to Git
 	// and pushing to remote if there are any changes.
 	ReconcileSyncConfig(ctx context.Context, options sync.Options, pollInterval, timeout time.Duration) error
+
+	// ConfirmHealthy confirms that the components and extra components in
+	// install.Options are healthy.
+	ConfirmHealthy(ctx context.Context, options install.Options, timeout time.Duration) error
 }
 
 type RepositoryReconciler interface {
@@ -87,6 +91,9 @@ func Run(ctx context.Context, reconciler Reconciler, manifestsBase string,
 		return err
 	}
 	if err := reconciler.ReconcileSyncConfig(ctx, syncOpts, pollInterval, timeout); err != nil {
+		return err
+	}
+	if err := reconciler.ConfirmHealthy(ctx, installOpts, timeout); err != nil {
 		return err
 	}
 

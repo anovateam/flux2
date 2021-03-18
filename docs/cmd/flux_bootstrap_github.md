@@ -63,7 +63,7 @@ flux bootstrap github [flags]
 
 ```
       --author-email string        author email for Git commits
-      --author-name string         author name for Git commits
+      --author-name string         author name for Git commits (default "Flux")
       --branch string              default branch (for GitHub this must match the default branch setting for the organization) (default "main")
       --cluster-domain string      internal cluster domain (default "cluster.local")
       --components strings         list of components, accepts comma-separated values (default [source-controller,kustomize-controller,helm-controller,notification-controller])
@@ -75,6 +75,7 @@ flux bootstrap github [flags]
   -n, --namespace string           the namespace scope for this operation (default "flux-system")
       --network-policy             deny ingress access to the toolkit controllers from other namespaces using network policies (default true)
       --registry string            container registry where the toolkit images are published (default "ghcr.io/fluxcd")
+      --secret-name string         name of the secret the sync credentials can be found in or stored to (default "flux-system")
       --timeout duration           timeout for this operation (default 5m0s)
       --token-auth                 when enabled, the personal access token will be used instead of SSH deploy key
       --toleration-keys strings    list of toleration keys used to schedule the components pods onto nodes with matching taints
